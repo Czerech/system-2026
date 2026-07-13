@@ -1,0 +1,14 @@
+{
+  "name": "System 2026 — życie poza pracą",
+  "short_name": "System 2026",
+  "description": "Tracker tygodniowego minimum, wagi, odblokowań i biblioteki",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#EFF1EC",
+  "theme_color": "#EFF1EC",
+  "icons": [
+    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
