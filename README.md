@@ -51,10 +51,22 @@ iOS (Safari): udostępnij → **Dodaj do ekranu początkowego**.
 - Przeniesienie na inne urządzenie: wystarczy zalogować się tym samym kontem —
   eksport/import JSON zostaje jako dodatkowy pełny backup "na wszelki wypadek".
 
+## Taski i sesje
+
+- **Codzienne** (Duolingo, Proszki): siatka 7 dni w zakładce Tydzień, tydzień
+  liczy się jako zaliczony tylko przy 7/7 dla obu.
+- **Tygodniowe**: Siłownia i Rower to liczniki (jak dotychczas). Figurki,
+  Czytanie i Rozwój to sesje z czasem trwania (minuty) — dodajesz sesję
+  (np. malowanie 25 min), a po przekroczeniu progu tygodniowego (Figurki 45,
+  Czytanie 60, Rozwój 120 min) zadanie jest zaliczone. Progi w `SESSION_THRESHOLDS`
+  w `src/App.jsx`.
+- **Historia** (zakładka): lista wszystkich zalogowanych sesji + wykres minut
+  na tydzień, z filtrem po kategorii.
+
 ## Struktura
 
 ```
-src/App.jsx    — cała aplikacja (zakładki: Tydzień, Waga, Cele, Fundusze, Biblioteka)
+src/App.jsx    — cała aplikacja (zakładki: Tydzień, Waga, Cele, Fundusze, Biblioteka, Historia)
 src/main.jsx   — bootstrap + rejestracja service workera
 public/sw.js   — offline (network-first z cache fallback)
 public/manifest.webmanifest, icon-*.png — PWA
@@ -66,4 +78,3 @@ public/manifest.webmanifest, icon-*.png — PWA
 - edycja pozycji biblioteki (notatki, zmiana typu)
 - import biblioteki z CSV (masowe zasilenie figurkami)
 - eksport tygodnia w formacie check-inu (gotowy tekst do wklejenia w poniedziałek)
-- synchronizacja między urządzeniami (np. plik w chmurze zamiast localStorage)

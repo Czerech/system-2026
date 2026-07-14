@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import {
   CalendarCheck, Scale, Trophy, PiggyBank, Library as LibraryIcon,
   Plus, Minus, Check, Star, Trash2, Search, AlertTriangle, Lock, Unlock,
-  Download, Upload, LogOut
+  Download, Upload, LogOut, History
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -50,17 +50,53 @@ function fmtPL(d) {
 
 /* ————— Model tygodnia ————— */
 const emptyWeek = () => ({
-  sila: 0, rower: 0, figurki: false, czytanie: false, duolingo: false,
-  wydatki: false, dom: false, rozwoj: 0, awaryjny: false,
+  sila: 0, rower: 0, wydatki: false, dom: false, awaryjny: false,
 });
-const isFullWeek = (w) =>
-  w.sila >= 2 && w.rower >= 1 && w.figurki && w.czytanie && w.duolingo &&
-  w.wydatki && w.dom && w.rozwoj >= 2;
+
+// sesje (czas w minutach), akumulowane w tygodniu do progu
+const SESSION_THRESHOLDS = { figurki: 45, czytanie: 60, rozwoj: 120 };
+const SESSION_LABELS = { figurki: "Figurki", czytanie: "Czytanie", rozwoj: "Rozwój" };
+// taski codzienne (7/7 w tygodniu, żeby tydzień się liczył)
+const DAILY_TASKS = [
+  { key: "duolingo", label: "Duolingo" },
+  { key: "proszki", label: "Proszki" },
+];
+
+function weekDayKeys(weekKey) {
+  const monday = fromKey(weekKey);
+  return Array.from({ length: 7 }, (_, i) => toKey(addDays(monday, i)));
+}
+function sessionsMinutesInWeek(data, weekKey, category) {
+  const days = weekDayKeys(weekKey);
+  return data.sessions
+    .filter((s) => s.category === category && days.includes(s.date))
+    .reduce((sum, s) => sum + s.minutes, 0);
+}
+function dailyDoneCountWeek(data, weekKey, task) {
+  return weekDayKeys(weekKey).filter((dk) => data.dailies[dk]?.[task]).length;
+}
+function dailyAllWeek(data, weekKey, task) {
+  return dailyDoneCountWeek(data, weekKey, task) === 7;
+}
+
+function isFullWeek(data, weekKey) {
+  const w = data.weeks[weekKey] || emptyWeek();
+  if (w.awaryjny) return false;
+  return (
+    w.sila >= 2 && w.rower >= 1 && w.wydatki && w.dom &&
+    sessionsMinutesInWeek(data, weekKey, "figurki") >= SESSION_THRESHOLDS.figurki &&
+    sessionsMinutesInWeek(data, weekKey, "czytanie") >= SESSION_THRESHOLDS.czytanie &&
+    sessionsMinutesInWeek(data, weekKey, "rozwoj") >= SESSION_THRESHOLDS.rozwoj &&
+    DAILY_TASKS.every((t) => dailyAllWeek(data, weekKey, t.key))
+  );
+}
 
 const DEFAULT_DATA = {
-  v: 1,
+  v: 2,
   weights: {},          // 'YYYY-MM-DD' -> kg
   weeks: {},            // 'YYYY-MM-DD' (poniedziałek) -> week obj
+  dailies: {},          // 'YYYY-MM-DD' -> { duolingo, proszki }
+  sessions: [],         // [{id, category: figurki|czytanie|rozwoj, minutes, date}]
   counters: {
     figPaintedSinceBuy: 0, figPaintedTotal: 0,
     booksFinished: 0, bookCreditsSpent: 0,
@@ -201,6 +237,7 @@ export default function App() {
     { id: "cele", label: "Cele", icon: Trophy },
     { id: "fundusze", label: "Fundusze", icon: PiggyBank },
     { id: "biblioteka", label: "Biblioteka", icon: LibraryIcon },
+    { id: "historia", label: "Historia", icon: History },
   ];
 
   if (authLoading) return null;
@@ -242,6 +279,7 @@ export default function App() {
         {tab === "cele" && <GoalsTab data={data} setData={setData} stats={stats} />}
         {tab === "fundusze" && <FundsTab data={data} setData={setData} stats={stats} />}
         {tab === "biblioteka" && <LibraryTab data={data} setData={setData} />}
+        {tab === "historia" && <HistoryTab data={data} setData={setData} />}
       </main>
 
       {/* Dolna nawigacja */}
@@ -315,7 +353,7 @@ function computeStats(data) {
 
   const weekObjs = elapsed.map((k) => ({ key: k, w: data.weeks[k] || emptyWeek() }));
   const nonEmergency = weekObjs.filter((x) => !x.w.awaryjny);
-  const fullWeeks = nonEmergency.filter((x) => isFullWeek(x.w)).length;
+  const fullWeeks = nonEmergency.filter((x) => isFullWeek(data, x.key)).length;
   const pct = nonEmergency.length ? Math.round((100 * fullWeeks) / nonEmergency.length) : 0;
 
   // seria siłowa (od bieżącego tygodnia wstecz; bieżący nie przerywa, awaryjne pauzują)
@@ -395,13 +433,15 @@ function WeekTab({ data, setData, stats }) {
   const upd = (patch) =>
     setData((d) => ({ ...d, weeks: { ...d.weeks, [mk]: { ...(d.weeks[mk] || emptyWeek()), ...patch } } }));
 
-  const full = isFullWeek(w);
+  const full = isFullWeek(data, mk);
   const toggles = [
-    { key: "figurki", label: "Figurki — 1 sesja ≥45 min" },
-    { key: "czytanie", label: "Czytanie — 3×20 min / audiobook" },
-    { key: "duolingo", label: "Duolingo 7/7" },
     { key: "wydatki", label: "Wydatki zapisane (15 min)" },
     { key: "dom", label: "Sprzątanie + 1 zadanie z backlogu" },
+  ];
+  const sessionGoals = [
+    { key: "figurki", label: "Figurki", sub: `sesje malowania · cel ${SESSION_THRESHOLDS.figurki} min/tydz.` },
+    { key: "czytanie", label: "Czytanie", sub: `czytanie / audiobook · cel ${SESSION_THRESHOLDS.czytanie} min/tydz.` },
+    { key: "rozwoj", label: "Rozwój", sub: `nauka / kursy · cel ${SESSION_THRESHOLDS.rozwoj} min/tydz.` },
   ];
 
   return (
@@ -431,6 +471,16 @@ function WeekTab({ data, setData, stats }) {
         )}
       </Card>
 
+      <SectionTitle>Codziennie</SectionTitle>
+      <Card>
+        {DAILY_TASKS.map((t, i) => (
+          <div key={t.key}>
+            <DailyRow label={t.label} task={t.key} weekKey={mk} data={data} setData={setData} />
+            {i < DAILY_TASKS.length - 1 && <Divider />}
+          </div>
+        ))}
+      </Card>
+
       <SectionTitle>Minimum tygodniowe</SectionTitle>
       <Card>
         <Row label="Siłownia" sub="min 2 · target 3">
@@ -441,14 +491,16 @@ function WeekTab({ data, setData, stats }) {
           <Stepper value={w.rower} onChange={(v) => upd({ rower: v })} />
         </Row>
         <Divider />
-        <Row label="Rozwój (h)" sub="min 2 h">
-          <Stepper value={w.rozwoj} onChange={(v) => upd({ rozwoj: v })} max={20} />
-        </Row>
-        <Divider />
-        {toggles.map((t, i) => (
+        {toggles.map((t) => (
           <div key={t.key}>
             <ToggleRow label={t.label} checked={w[t.key]} onChange={(v) => upd({ [t.key]: v })} />
-            {i < toggles.length - 1 && <Divider />}
+            <Divider />
+          </div>
+        ))}
+        {sessionGoals.map((g, i) => (
+          <div key={g.key}>
+            <SessionGoalRow label={g.label} sub={g.sub} category={g.key} weekKey={mk} data={data} setData={setData} threshold={SESSION_THRESHOLDS[g.key]} />
+            {i < sessionGoals.length - 1 && <Divider />}
           </div>
         ))}
       </Card>
@@ -490,6 +542,96 @@ function ToggleRow({ label, checked, onChange }) {
 }
 function Divider() {
   return <div style={{ height: 1, background: T.line }} />;
+}
+
+const DAY_LETTERS = ["P", "W", "Ś", "C", "P", "S", "N"];
+
+function DailyRow({ label, task, weekKey, data, setData }) {
+  const days = weekDayKeys(weekKey);
+  const today = toKey(new Date());
+  const doneCount = dailyDoneCountWeek(data, weekKey, task);
+  const toggle = (dk, checked) =>
+    setData((d) => ({
+      ...d,
+      dailies: { ...d.dailies, [dk]: { duolingo: false, proszki: false, ...(d.dailies[dk] || {}), [task]: checked } },
+    }));
+
+  return (
+    <div style={{ padding: "10px 0" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <span style={{ fontWeight: 700, fontSize: 14 }}>{label}</span>
+        <span className="num" style={{ fontSize: 12, fontWeight: 800, color: doneCount === 7 ? T.done : T.muted }}>{doneCount} / 7</span>
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        {days.map((dk, i) => {
+          const checked = !!data.dailies[dk]?.[task];
+          const future = dk > today;
+          return (
+            <button key={dk} disabled={future} onClick={() => toggle(dk, !checked)}
+              aria-label={`${label} ${dk}`}
+              style={{
+                flex: 1, height: 34, borderRadius: 8, fontSize: 10.5, fontWeight: 800,
+                border: `1.5px solid ${checked ? T.done : T.line}`,
+                background: checked ? T.done : T.card, color: checked ? "#fff" : T.muted,
+                opacity: future ? 0.35 : 1,
+              }}>
+              {DAY_LETTERS[i]}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SessionGoalRow({ label, sub, category, weekKey, data, setData, threshold }) {
+  const [adding, setAdding] = useState(false);
+  const [minutes, setMinutes] = useState("");
+  const [dateKey, setDateKey] = useState(toKey(new Date()));
+
+  const done = sessionsMinutesInWeek(data, weekKey, category);
+  const complete = done >= threshold;
+
+  const add = () => {
+    const n = parseInt(minutes, 10);
+    if (!n || n <= 0) return;
+    const item = { id: Date.now() + "" + Math.random().toString(36).slice(2, 6), category, minutes: n, date: dateKey };
+    setData((d) => ({ ...d, sessions: [item, ...d.sessions] }));
+    setMinutes("");
+    setAdding(false);
+  };
+
+  return (
+    <div style={{ padding: "10px 0" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>{label}</div>
+          <div style={{ fontSize: 11, color: T.muted, fontWeight: 600 }}>{sub}</div>
+        </div>
+        <span className="num" style={{ fontSize: 11, fontWeight: 900, padding: "5px 9px", borderRadius: 8, flexShrink: 0, background: complete ? T.done : "#F3E8DF", color: complete ? "#fff" : T.accent }}>
+          {done} / {threshold} min
+        </span>
+      </div>
+      <div style={{ marginTop: 8 }}>
+        <Bar value={done} max={threshold} color={complete ? T.done : T.accent} />
+      </div>
+      {!adding ? (
+        <button onClick={() => setAdding(true)}
+          style={{ marginTop: 8, background: "none", border: "none", color: T.accent, fontWeight: 800, fontSize: 12.5, padding: 0 }}>
+          + Dodaj sesję
+        </button>
+      ) : (
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <input type="date" value={dateKey} onChange={(e) => setDateKey(e.target.value)}
+            style={{ border: `1px solid ${T.line}`, borderRadius: 10, padding: "8px", fontSize: 13, flex: "0 0 auto" }} />
+          <input type="number" inputMode="numeric" placeholder="min" value={minutes} onChange={(e) => setMinutes(e.target.value)}
+            style={{ border: `1px solid ${T.line}`, borderRadius: 10, padding: "8px 10px", fontSize: 14, width: 70, minWidth: 0 }} />
+          <ActionBtn onClick={add} disabled={!minutes}>Dodaj</ActionBtn>
+          <ActionBtn variant="ghost" onClick={() => setAdding(false)}>Anuluj</ActionBtn>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ————— WAGA ————— */
@@ -936,5 +1078,74 @@ function Chip({ children, active, onClick }) {
     <button onClick={onClick} style={{ flexShrink: 0, padding: "6px 12px", borderRadius: 99, fontSize: 12, fontWeight: 800, border: `1.5px solid ${active ? T.ink : T.line}`, background: active ? T.ink : T.card, color: active ? "#fff" : T.muted }}>
       {children}
     </button>
+  );
+}
+
+/* ————— HISTORIA ————— */
+const SESSION_CATEGORIES = ["figurki", "czytanie", "rozwoj"];
+const CHART_WEEKS = 8;
+
+function HistoryTab({ data, setData }) {
+  const [filter, setFilter] = useState("wszystko");
+
+  const curMonday = mondayOf(new Date());
+  const weekKeys = Array.from({ length: CHART_WEEKS }, (_, i) => toKey(addDays(curMonday, (i - (CHART_WEEKS - 1)) * 7)));
+
+  const chartData = weekKeys.map((k) => {
+    const total = filter === "wszystko"
+      ? SESSION_CATEGORIES.reduce((sum, c) => sum + sessionsMinutesInWeek(data, k, c), 0)
+      : sessionsMinutesInWeek(data, k, filter);
+    return { key: k, minutes: total };
+  });
+  const maxMinutes = Math.max(1, ...chartData.map((x) => x.minutes));
+
+  const sessions = data.sessions
+    .filter((s) => filter === "wszystko" || s.category === filter)
+    .slice()
+    .sort((a, b) => (a.date === b.date ? 0 : a.date < b.date ? 1 : -1));
+
+  const del = (id) => setData((d) => ({ ...d, sessions: d.sessions.filter((s) => s.id !== id) }));
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 8, marginBottom: 4 }}>
+        <Chip active={filter === "wszystko"} onClick={() => setFilter("wszystko")}>wszystko</Chip>
+        {SESSION_CATEGORIES.map((c) => (
+          <Chip key={c} active={filter === c} onClick={() => setFilter(c)}>{SESSION_LABELS[c]}</Chip>
+        ))}
+      </div>
+
+      <SectionTitle>Minuty na tydzień</SectionTitle>
+      <Card>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 120 }}>
+          {chartData.map((x) => (
+            <div key={x.key} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, minWidth: 0 }}>
+              <div className="num" style={{ fontSize: 9.5, fontWeight: 700, color: T.muted }}>{x.minutes || ""}</div>
+              <div style={{ width: "100%", height: 90, background: T.paper, borderRadius: 5, overflow: "hidden", display: "flex", alignItems: "flex-end", border: `1px solid ${T.line}` }}>
+                <div style={{ width: "100%", height: `${(x.minutes / maxMinutes) * 100}%`, background: x.key === toKey(curMonday) ? T.accent : T.muted, opacity: x.key === toKey(curMonday) ? 1 : 0.55 }} />
+              </div>
+              <div style={{ fontSize: 9, color: T.muted, fontWeight: 600 }}>{fmtPL(fromKey(x.key))}</div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <SectionTitle>Zdarzenia</SectionTitle>
+      <Card>
+        {sessions.length === 0 && <Empty>Brak zalogowanych sesji dla tego filtra.</Empty>}
+        {sessions.map((s, i) => (
+          <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: i < sessions.length - 1 ? `1px solid ${T.line}` : "none" }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>{SESSION_LABELS[s.category]}</div>
+              <div style={{ fontSize: 11, color: T.muted, fontWeight: 600 }}>{fmtPL(fromKey(s.date))}</div>
+            </div>
+            <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <span className="num" style={{ fontWeight: 800 }}>{s.minutes} min</span>
+              <button onClick={() => del(s.id)} style={{ background: "none", border: "none", color: T.muted, padding: 4 }} aria-label="usuń"><Trash2 size={15} /></button>
+            </span>
+          </div>
+        ))}
+      </Card>
+    </div>
   );
 }
