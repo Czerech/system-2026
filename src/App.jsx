@@ -2,8 +2,9 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import {
   CalendarCheck, Scale, Trophy, PiggyBank, Library as LibraryIcon,
   Plus, Minus, Check, Star, Trash2, Search, AlertTriangle, Lock, Unlock,
-  Download, Upload
+  Download, Upload, LogOut
 } from "lucide-react";
+import { supabase } from "./supabaseClient";
 
 /* ————— Tokens ————— */
 const T = {
@@ -71,17 +72,20 @@ const DEFAULT_DATA = {
 
 const STORAGE_KEY = "system-2026-v1";
 
+function mergeWithDefaults(parsed) {
+  return {
+    ...DEFAULT_DATA,
+    ...parsed,
+    counters: { ...DEFAULT_DATA.counters, ...(parsed.counters || {}) },
+    funds: { ...DEFAULT_DATA.funds, ...(parsed.funds || {}) },
+  };
+}
+
 function loadData() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_DATA;
-    const parsed = JSON.parse(raw);
-    return {
-      ...DEFAULT_DATA,
-      ...parsed,
-      counters: { ...DEFAULT_DATA.counters, ...(parsed.counters || {}) },
-      funds: { ...DEFAULT_DATA.funds, ...(parsed.funds || {}) },
-    };
+    return mergeWithDefaults(JSON.parse(raw));
   } catch {
     return DEFAULT_DATA;
   }
@@ -92,23 +96,102 @@ export default function App() {
   const [data, setData] = useState(loadData);
   const [tab, setTab] = useState("tydzien");
   const [saved, setSaved] = useState(true);
+  const [session, setSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [syncState, setSyncState] = useState("idle"); // idle | syncing | synced | offline
+  const [syncReady, setSyncReady] = useState(false);
   const saveTimer = useRef(null);
   const firstRender = useRef(true);
+  const applyingRemote = useRef(false);
 
+  /* sesja logowania */
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session: s } }) => {
+      setSession(s);
+      setAuthLoading(false);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!session) { setSyncReady(false); return; }
+  }, [session]);
+
+  /* pobranie danych z chmury po zalogowaniu */
+  useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
+    setSyncReady(false);
+    supabase.from("user_data").select("data").eq("user_id", session.user.id).maybeSingle()
+      .then(({ data: row, error }) => {
+        if (cancelled) return;
+        if (row && row.data) {
+          applyingRemote.current = true;
+          setData(mergeWithDefaults(row.data));
+        } else if (!error) {
+          supabase.from("user_data").upsert({ user_id: session.user.id, data });
+        }
+        setSyncReady(true);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.user?.id]);
+
+  /* nasłuch zmian z innych urządzeń */
+  useEffect(() => {
+    if (!session) return;
+    const channel = supabase
+      .channel(`user_data_${session.user.id}`)
+      .on("postgres_changes",
+        { event: "*", schema: "public", table: "user_data", filter: `user_id=eq.${session.user.id}` },
+        (payload) => {
+          if (!payload.new || !payload.new.data) return;
+          const merged = mergeWithDefaults(payload.new.data);
+          setData((prev) => {
+            if (JSON.stringify(merged) === JSON.stringify(prev)) return prev;
+            applyingRemote.current = true;
+            return merged;
+          });
+        })
+      .subscribe();
+    return () => supabase.removeChannel(channel);
+  }, [session?.user?.id]);
+
+  /* zapis lokalny (zawsze) + synchronizacja w chmurze (gdy zalogowany) */
   useEffect(() => {
     if (firstRender.current) { firstRender.current = false; return; }
     setSaved(false);
     clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
+    const skipRemoteThisRound = applyingRemote.current;
+    applyingRemote.current = false;
+    saveTimer.current = setTimeout(async () => {
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
         setSaved(true);
       } catch {
         setSaved(false);
       }
+      if (session && syncReady && !skipRemoteThisRound) {
+        setSyncState("syncing");
+        const { error } = await supabase.from("user_data").upsert({ user_id: session.user.id, data });
+        setSyncState(error ? "offline" : "synced");
+      }
     }, 500);
     return () => clearTimeout(saveTimer.current);
-  }, [data]);
+  }, [data, session, syncReady]);
+
+  /* ponowna próba synchronizacji po powrocie sieci */
+  useEffect(() => {
+    if (!session || !syncReady) return;
+    const retry = async () => {
+      setSyncState("syncing");
+      const { error } = await supabase.from("user_data").upsert({ user_id: session.user.id, data });
+      setSyncState(error ? "offline" : "synced");
+    };
+    window.addEventListener("online", retry);
+    return () => window.removeEventListener("online", retry);
+  }, [session, syncReady, data]);
 
   const stats = useMemo(() => computeStats(data), [data]);
 
@@ -119,6 +202,11 @@ export default function App() {
     { id: "fundusze", label: "Fundusze", icon: PiggyBank },
     { id: "biblioteka", label: "Biblioteka", icon: LibraryIcon },
   ];
+
+  if (authLoading) return null;
+  if (!session) return <AuthGate />;
+
+  const syncLabel = { idle: null, syncing: "synchronizowanie…", synced: "zsynchronizowano", offline: "brak sieci — zapisano lokalnie" }[syncState];
 
   return (
     <div style={{ minHeight: "100vh", background: T.paper, color: T.ink, fontFamily: font }}>
@@ -138,7 +226,14 @@ export default function App() {
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.14em", color: T.accent, textTransform: "uppercase" }}>System 2026</div>
           <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.02em" }}>Życie poza pracą</div>
         </div>
-        <div style={{ fontSize: 11, color: saved ? T.muted : T.accent, fontWeight: 600 }}>{saved ? "zapisano" : "zapisywanie…"}</div>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
+          <div style={{ fontSize: 11, color: saved ? T.muted : T.accent, fontWeight: 600 }}>{saved ? "zapisano" : "zapisywanie…"}</div>
+          {syncLabel && <div style={{ fontSize: 10, color: syncState === "offline" ? T.danger : T.muted, fontWeight: 600 }}>{syncLabel}</div>}
+          <button onClick={() => supabase.auth.signOut()}
+            style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", color: T.muted, fontSize: 10, fontWeight: 700, padding: 0 }}>
+            <LogOut size={11} /> Wyloguj
+          </button>
+        </div>
       </header>
 
       <main style={{ maxWidth: 560, margin: "0 auto", padding: "8px 16px 96px" }}>
@@ -163,6 +258,47 @@ export default function App() {
           );
         })}
       </nav>
+    </div>
+  );
+}
+
+/* ————— Logowanie ————— */
+function AuthGate() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    setLoading(false);
+    if (error) setError("Nieprawidłowy email lub hasło.");
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: T.paper, color: T.ink, fontFamily: font, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <form onSubmit={submit} style={{ width: "100%", maxWidth: 360 }}>
+        <div style={{ textAlign: "center", marginBottom: 18 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.14em", color: T.accent, textTransform: "uppercase" }}>System 2026</div>
+          <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.02em" }}>Zaloguj się</div>
+        </div>
+        <Card style={{ padding: 18 }}>
+          <div style={{ display: "grid", gap: 10 }}>
+            <input type="email" required autoFocus placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)}
+              style={{ border: `1px solid ${T.line}`, borderRadius: 10, padding: "10px 12px", fontSize: 15 }} />
+            <input type="password" required placeholder="Hasło" value={password} onChange={(e) => setPassword(e.target.value)}
+              style={{ border: `1px solid ${T.line}`, borderRadius: 10, padding: "10px 12px", fontSize: 15 }} />
+            {error && <div style={{ fontSize: 12.5, color: T.danger, fontWeight: 600 }}>{error}</div>}
+            <button type="submit" disabled={loading || !email.trim() || !password}
+              style={{ background: T.ink, color: "#fff", border: "none", borderRadius: 10, padding: "12px", fontWeight: 800, fontSize: 14, opacity: loading || !email.trim() || !password ? 0.6 : 1 }}>
+              {loading ? "Logowanie…" : "Zaloguj"}
+            </button>
+          </div>
+        </Card>
+      </form>
     </div>
   );
 }
@@ -592,12 +728,7 @@ function FundsTab({ data, setData, stats }) {
       try {
         const parsed = JSON.parse(reader.result);
         if (!parsed || typeof parsed !== "object" || !("weeks" in parsed)) throw new Error("bad file");
-        setData({
-          ...DEFAULT_DATA,
-          ...parsed,
-          counters: { ...DEFAULT_DATA.counters, ...(parsed.counters || {}) },
-          funds: { ...DEFAULT_DATA.funds, ...(parsed.funds || {}) },
-        });
+        setData(mergeWithDefaults(parsed));
       } catch {
         alert("Nieprawidłowy plik backupu.");
       }

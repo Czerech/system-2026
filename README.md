@@ -15,6 +15,13 @@ npm install
 npm run dev
 ```
 
+Do synchronizacji w chmurze potrzebny jest plik `.env.local` (niecommitowany) z:
+```
+VITE_SUPABASE_URL=...
+VITE_SUPABASE_ANON_KEY=...
+```
+Wartości z panelu Supabase → Settings → API danego projektu.
+
 ## Deploy (najprościej: Vercel)
 
 1. Wypchnij repo na GitHub:
@@ -34,9 +41,15 @@ iOS (Safari): udostępnij → **Dodaj do ekranu początkowego**.
 
 ## Dane
 
-- Wszystko trzymane w `localStorage` pod kluczem `system-2026-v1` — dane są per przeglądarka/urządzenie.
+- Aplikacja wymaga logowania (email + hasło, Supabase Auth) i synchronizuje dane
+  automatycznie między urządzeniami — zmiana na telefonie pojawia się na innych
+  zalogowanych urządzeniach niemal od razu (realtime), a przy braku sieci apka
+  dalej działa offline na lokalnej kopii i dogania się po powrocie połączenia.
+- Lokalnie dane trzymane są też w `localStorage` pod kluczem `system-2026-v1`
+  (kopia offline/fallback), a w chmurze w tabeli Supabase `user_data`.
 - Backup: zakładka **Fundusze → Dane → Eksport JSON**. Rób przy poniedziałkowym check-inie.
-- Przeniesienie na inne urządzenie: eksport → import.
+- Przeniesienie na inne urządzenie: wystarczy zalogować się tym samym kontem —
+  eksport/import JSON zostaje jako dodatkowy pełny backup "na wszelki wypadek".
 
 ## Struktura
 
