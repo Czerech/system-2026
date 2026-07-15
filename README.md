@@ -5,8 +5,8 @@ Tracker tygodniowego minimum, wagi, odblokowań zakupowych, funduszy i bibliotek
 i działa offline. Dane w localStorage przeglądarki + eksport/import JSON.
 
 Odpowiednik dokumentu `plan-zycie-poza-praca-2026.md` w kodzie:
-sezon 13.07–31.12.2026, 24 tygodnie, waga 115 → <100 kg, bonusy 100 zł/tydzień
-i 200 zł/kg, odblokowania (sprzęt 8 tygodni, figurki 5, książki 1:1→2:1, rower <100 kg).
+sezon 13.07–31.12.2026, 24 tygodnie, waga 116,5 → <99,9 kg, bonusy 100 zł/tydzień
+i 200 zł/kg, odblokowania (sprzęt 8 tygodni, figurki 5, książki 1:1→2:1, rower <99,9 kg).
 
 ## Uruchomienie lokalne
 
@@ -55,13 +55,19 @@ iOS (Safari): udostępnij → **Dodaj do ekranu początkowego**.
 
 - **Codzienne** (Duolingo, Proszki): siatka 7 dni w zakładce Tydzień, tydzień
   liczy się jako zaliczony tylko przy 7/7 dla obu.
-- **Tygodniowe**: Siłownia i Rower to liczniki (jak dotychczas). Figurki,
-  Czytanie i Rozwój to sesje z czasem trwania (minuty) — dodajesz sesję
-  (np. malowanie 25 min), a po przekroczeniu progu tygodniowego (Figurki 45,
-  Czytanie 60, Rozwój 120 min) zadanie jest zaliczone. Progi w `SESSION_THRESHOLDS`
-  w `src/App.jsx`.
-- **Historia** (zakładka): lista wszystkich zalogowanych sesji + wykres minut
-  na tydzień, z filtrem po kategorii.
+- **Tygodniowe** — wszystko to logowane sesje (data + czas trwania w minutach,
+  Siłownia/Rower dodatkowo z godziną):
+  - Siłownia (próg: 2 sesje/tydz.), Rower (1 sesja/tydz.) — liczy się liczba sesji.
+  - Figurki (45 min/tydz.), Czytanie (60 min/tydz.), Rozwój (120 min/tydz.) —
+    liczy się suma minut. Progi/tryby w `SESSION_GOALS` w `src/App.jsx`.
+- **Historia** (zakładka): lista wszystkich zalogowanych sesji (z godziną, jeśli
+  podana) + wykres minut na tydzień, z filtrem po kategorii.
+
+## Wykresy wagi
+
+Zakładka Waga ma dwa wykresy (pomiary dzienne, średnie tygodniowe) z liniami
+odniesienia: start (`START_WEIGHT`) i cel (`GOAL_WEIGHT`, w `src/App.jsx`).
+Oś X rozciąga się od startu sezonu do dziś — rośnie automatycznie z każdym dniem.
 
 ## Struktura
 

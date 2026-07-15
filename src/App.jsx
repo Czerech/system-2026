@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import {
   CalendarCheck, Scale, Trophy, PiggyBank, Library as LibraryIcon,
-  Plus, Minus, Check, Star, Trash2, Search, AlertTriangle, Lock, Unlock,
+  Plus, Check, Star, Trash2, Search, AlertTriangle, Lock, Unlock,
   Download, Upload, LogOut, History
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
@@ -22,8 +22,8 @@ const font = "'Archivo', system-ui, sans-serif";
 /* ————— Daty ————— */
 const SEASON_START = new Date(2026, 6, 13); // pon 13.07.2026
 const TOTAL_WEEKS = 24;
-const START_WEIGHT = 115;
-const GOAL_WEIGHT = 100;
+const START_WEIGHT = 116.5;
+const GOAL_WEIGHT = 99.9;
 
 function toKey(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -50,12 +50,19 @@ function fmtPL(d) {
 
 /* ————— Model tygodnia ————— */
 const emptyWeek = () => ({
-  sila: 0, rower: 0, wydatki: false, dom: false, awaryjny: false,
+  wydatki: false, dom: false, awaryjny: false,
 });
 
-// sesje (czas w minutach), akumulowane w tygodniu do progu
-const SESSION_THRESHOLDS = { figurki: 45, czytanie: 60, rozwoj: 120 };
-const SESSION_LABELS = { figurki: "Figurki", czytanie: "Czytanie", rozwoj: "Rozwój" };
+// sesje aktywności: date + opcjonalnie time (godzina), zawsze minutes (czas trwania).
+// mode "count" — próg to liczba sesji w tygodniu; mode "minutes" — próg to suma minut.
+const SESSION_GOALS = {
+  sila: { label: "Siłownia", mode: "count", threshold: 2, sub: "min 2 sesje/tydz. · target 3", withTime: true },
+  rower: { label: "Rower", mode: "count", threshold: 1, sub: "min 1 sesja/tydz. · target 2", withTime: true },
+  figurki: { label: "Figurki", mode: "minutes", threshold: 45, sub: "sesje malowania · cel 45 min/tydz.", withTime: false },
+  czytanie: { label: "Czytanie", mode: "minutes", threshold: 60, sub: "czytanie / audiobook · cel 60 min/tydz.", withTime: false },
+  rozwoj: { label: "Rozwój", mode: "minutes", threshold: 120, sub: "nauka / kursy · cel 120 min/tydz.", withTime: false },
+};
+const SESSION_LABELS = Object.fromEntries(Object.entries(SESSION_GOALS).map(([k, g]) => [k, g.label]));
 // taski codzienne (7/7 w tygodniu, żeby tydzień się liczył)
 const DAILY_TASKS = [
   { key: "duolingo", label: "Duolingo" },
@@ -66,11 +73,16 @@ function weekDayKeys(weekKey) {
   const monday = fromKey(weekKey);
   return Array.from({ length: 7 }, (_, i) => toKey(addDays(monday, i)));
 }
-function sessionsMinutesInWeek(data, weekKey, category) {
+function sessionsInWeek(data, weekKey, category) {
   const days = weekDayKeys(weekKey);
-  return data.sessions
-    .filter((s) => s.category === category && days.includes(s.date))
-    .reduce((sum, s) => sum + s.minutes, 0);
+  return data.sessions.filter((s) => s.category === category && days.includes(s.date));
+}
+function sessionsMinutesInWeek(data, weekKey, category) {
+  return sessionsInWeek(data, weekKey, category).reduce((sum, s) => sum + s.minutes, 0);
+}
+function sessionGoalValue(data, weekKey, category) {
+  const g = SESSION_GOALS[category];
+  return g.mode === "count" ? sessionsInWeek(data, weekKey, category).length : sessionsMinutesInWeek(data, weekKey, category);
 }
 function dailyDoneCountWeek(data, weekKey, task) {
   return weekDayKeys(weekKey).filter((dk) => data.dailies[dk]?.[task]).length;
@@ -83,10 +95,8 @@ function isFullWeek(data, weekKey) {
   const w = data.weeks[weekKey] || emptyWeek();
   if (w.awaryjny) return false;
   return (
-    w.sila >= 2 && w.rower >= 1 && w.wydatki && w.dom &&
-    sessionsMinutesInWeek(data, weekKey, "figurki") >= SESSION_THRESHOLDS.figurki &&
-    sessionsMinutesInWeek(data, weekKey, "czytanie") >= SESSION_THRESHOLDS.czytanie &&
-    sessionsMinutesInWeek(data, weekKey, "rozwoj") >= SESSION_THRESHOLDS.rozwoj &&
+    w.wydatki && w.dom &&
+    Object.keys(SESSION_GOALS).every((cat) => sessionGoalValue(data, weekKey, cat) >= SESSION_GOALS[cat].threshold) &&
     DAILY_TASKS.every((t) => dailyAllWeek(data, weekKey, t.key))
   );
 }
@@ -359,10 +369,10 @@ function computeStats(data) {
   // seria siłowa (od bieżącego tygodnia wstecz; bieżący nie przerywa, awaryjne pauzują)
   let streak = 0;
   for (let i = weekObjs.length - 1; i >= 0; i--) {
-    const { w } = weekObjs[i];
+    const { key, w } = weekObjs[i];
     const isCurrent = i === weekObjs.length - 1;
     if (w.awaryjny) continue;
-    if (w.sila >= 2) streak++;
+    if (sessionGoalValue(data, key, "sila") >= SESSION_GOALS.sila.threshold) streak++;
     else if (isCurrent) continue;
     else break;
   }
@@ -410,17 +420,6 @@ function Bar({ value, max, color = T.accent }) {
     </div>
   );
 }
-function Stepper({ value, onChange, min = 0, max = 9 }) {
-  const btn = { width: 34, height: 34, borderRadius: 10, border: `1px solid ${T.line}`, background: T.card, display: "flex", alignItems: "center", justifyContent: "center", color: T.ink };
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <button style={btn} onClick={() => onChange(Math.max(min, value - 1))} aria-label="mniej"><Minus size={16} /></button>
-      <div className="num" style={{ minWidth: 22, textAlign: "center", fontWeight: 800, fontSize: 17 }}>{value}</div>
-      <button style={btn} onClick={() => onChange(Math.min(max, value + 1))} aria-label="więcej"><Plus size={16} /></button>
-    </div>
-  );
-}
-
 /* ————— TYDZIEŃ ————— */
 function WeekTab({ data, setData, stats }) {
   const [offset, setOffset] = useState(0); // 0 = bieżący
@@ -438,11 +437,7 @@ function WeekTab({ data, setData, stats }) {
     { key: "wydatki", label: "Wydatki zapisane (15 min)" },
     { key: "dom", label: "Sprzątanie + 1 zadanie z backlogu" },
   ];
-  const sessionGoals = [
-    { key: "figurki", label: "Figurki", sub: `sesje malowania · cel ${SESSION_THRESHOLDS.figurki} min/tydz.` },
-    { key: "czytanie", label: "Czytanie", sub: `czytanie / audiobook · cel ${SESSION_THRESHOLDS.czytanie} min/tydz.` },
-    { key: "rozwoj", label: "Rozwój", sub: `nauka / kursy · cel ${SESSION_THRESHOLDS.rozwoj} min/tydz.` },
-  ];
+  const sessionGoalKeys = Object.keys(SESSION_GOALS);
 
   return (
     <div>
@@ -483,24 +478,18 @@ function WeekTab({ data, setData, stats }) {
 
       <SectionTitle>Minimum tygodniowe</SectionTitle>
       <Card>
-        <Row label="Siłownia" sub="min 2 · target 3">
-          <Stepper value={w.sila} onChange={(v) => upd({ sila: v })} />
-        </Row>
-        <Divider />
-        <Row label="Rower" sub="min 1 · target 2">
-          <Stepper value={w.rower} onChange={(v) => upd({ rower: v })} />
-        </Row>
-        <Divider />
-        {toggles.map((t) => (
-          <div key={t.key}>
-            <ToggleRow label={t.label} checked={w[t.key]} onChange={(v) => upd({ [t.key]: v })} />
+        {sessionGoalKeys.map((key) => (
+          <div key={key}>
+            <SessionGoalRow label={SESSION_GOALS[key].label} sub={SESSION_GOALS[key].sub} category={key}
+              mode={SESSION_GOALS[key].mode} threshold={SESSION_GOALS[key].threshold} withTime={SESSION_GOALS[key].withTime}
+              weekKey={mk} data={data} setData={setData} />
             <Divider />
           </div>
         ))}
-        {sessionGoals.map((g, i) => (
-          <div key={g.key}>
-            <SessionGoalRow label={g.label} sub={g.sub} category={g.key} weekKey={mk} data={data} setData={setData} threshold={SESSION_THRESHOLDS[g.key]} />
-            {i < sessionGoals.length - 1 && <Divider />}
+        {toggles.map((t, i) => (
+          <div key={t.key}>
+            <ToggleRow label={t.label} checked={w[t.key]} onChange={(v) => upd({ [t.key]: v })} />
+            {i < toggles.length - 1 && <Divider />}
           </div>
         ))}
       </Card>
@@ -584,18 +573,25 @@ function DailyRow({ label, task, weekKey, data, setData }) {
   );
 }
 
-function SessionGoalRow({ label, sub, category, weekKey, data, setData, threshold }) {
+function nowTime() {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function SessionGoalRow({ label, sub, category, weekKey, data, setData, mode, threshold, withTime }) {
   const [adding, setAdding] = useState(false);
   const [minutes, setMinutes] = useState("");
   const [dateKey, setDateKey] = useState(toKey(new Date()));
+  const [time, setTime] = useState(nowTime());
 
-  const done = sessionsMinutesInWeek(data, weekKey, category);
+  const done = sessionGoalValue(data, weekKey, category);
   const complete = done >= threshold;
+  const unit = mode === "count" ? (threshold === 1 ? "sesja" : "sesje") : "min";
 
   const add = () => {
     const n = parseInt(minutes, 10);
     if (!n || n <= 0) return;
-    const item = { id: Date.now() + "" + Math.random().toString(36).slice(2, 6), category, minutes: n, date: dateKey };
+    const item = { id: Date.now() + "" + Math.random().toString(36).slice(2, 6), category, minutes: n, date: dateKey, ...(withTime && time ? { time } : {}) };
     setData((d) => ({ ...d, sessions: [item, ...d.sessions] }));
     setMinutes("");
     setAdding(false);
@@ -609,7 +605,7 @@ function SessionGoalRow({ label, sub, category, weekKey, data, setData, threshol
           <div style={{ fontSize: 11, color: T.muted, fontWeight: 600 }}>{sub}</div>
         </div>
         <span className="num" style={{ fontSize: 11, fontWeight: 900, padding: "5px 9px", borderRadius: 8, flexShrink: 0, background: complete ? T.done : "#F3E8DF", color: complete ? "#fff" : T.accent }}>
-          {done} / {threshold} min
+          {done} / {threshold} {unit}
         </span>
       </div>
       <div style={{ marginTop: 8 }}>
@@ -621,13 +617,93 @@ function SessionGoalRow({ label, sub, category, weekKey, data, setData, threshol
           + Dodaj sesję
         </button>
       ) : (
-        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
           <input type="date" value={dateKey} onChange={(e) => setDateKey(e.target.value)}
             style={{ border: `1px solid ${T.line}`, borderRadius: 10, padding: "8px", fontSize: 13, flex: "0 0 auto" }} />
+          {withTime && (
+            <input type="time" value={time} onChange={(e) => setTime(e.target.value)}
+              style={{ border: `1px solid ${T.line}`, borderRadius: 10, padding: "8px", fontSize: 13, flex: "0 0 auto" }} />
+          )}
           <input type="number" inputMode="numeric" placeholder="min" value={minutes} onChange={(e) => setMinutes(e.target.value)}
-            style={{ border: `1px solid ${T.line}`, borderRadius: 10, padding: "8px 10px", fontSize: 14, width: 70, minWidth: 0 }} />
+            style={{ border: `1px solid ${T.line}`, borderRadius: 10, padding: "8px 10px", fontSize: 14, width: 62, minWidth: 0 }} />
           <ActionBtn onClick={add} disabled={!minutes}>Dodaj</ActionBtn>
           <ActionBtn variant="ghost" onClick={() => setAdding(false)}>Anuluj</ActionBtn>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ————— Wykres wagi ————— */
+function WeightChart({ points }) {
+  // points: [{date:'YYYY-MM-DD', value:number}] posortowane rosnąco
+  const [hover, setHover] = useState(null);
+  const svgRef = useRef(null);
+
+  const W = 640, H = 200;
+  const padL = 38, padR = 10, padT = 16, padB = 20;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const firstPointDate = points.length ? fromKey(points[0].date) : null;
+  const domainStart = firstPointDate && firstPointDate < SEASON_START ? firstPointDate : SEASON_START;
+  const domainEnd = today > domainStart ? today : addDays(domainStart, 1);
+  const span = Math.max(domainEnd - domainStart, 864e5);
+
+  const xOf = (d) => padL + ((d - domainStart) / span) * plotW;
+  const allVals = [START_WEIGHT, GOAL_WEIGHT, ...points.map((p) => p.value)];
+  const yMax = Math.max(...allVals) + 1;
+  const yMin = Math.min(...allVals) - 1;
+  const yOf = (v) => padT + (1 - (v - yMin) / (yMax - yMin)) * plotH;
+
+  const pts = points.map((p) => ({ ...p, x: xOf(fromKey(p.date)), y: yOf(p.value) }));
+  const pathD = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+  const showDots = pts.length <= 40;
+
+  const handleMove = (e) => {
+    if (!svgRef.current || pts.length === 0) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const px = ((e.clientX - rect.left) / rect.width) * W;
+    let nearest = 0, nearestDist = Infinity;
+    pts.forEach((p, i) => {
+      const dist = Math.abs(p.x - px);
+      if (dist < nearestDist) { nearestDist = dist; nearest = i; }
+    });
+    setHover(nearest);
+  };
+
+  const hp = hover !== null ? pts[hover] : null;
+
+  if (points.length === 0) return <Empty>Brak pomiarów. Pierwszy wpis poniżej.</Empty>;
+
+  return (
+    <div style={{ position: "relative" }}>
+      <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block", overflow: "visible" }}
+        onMouseMove={handleMove} onMouseLeave={() => setHover(null)}>
+        <line x1={padL} x2={W - padR} y1={yOf(START_WEIGHT)} y2={yOf(START_WEIGHT)} stroke={T.line} strokeWidth="1.5" strokeDasharray="4 3" />
+        <text x={padL} y={yOf(START_WEIGHT) - 4} fontSize="9" fontWeight="700" fill={T.muted}>start {START_WEIGHT} kg</text>
+        <line x1={padL} x2={W - padR} y1={yOf(GOAL_WEIGHT)} y2={yOf(GOAL_WEIGHT)} stroke={T.done} strokeWidth="1.5" strokeDasharray="4 3" />
+        <text x={padL} y={yOf(GOAL_WEIGHT) - 4} fontSize="9" fontWeight="700" fill={T.done}>cel {GOAL_WEIGHT} kg</text>
+
+        {pts.length > 0 && <path d={pathD} fill="none" stroke={T.accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />}
+        {showDots && pts.map((p, i) => (
+          <circle key={i} cx={p.x} cy={p.y} r={i === hover ? 4.5 : 2.5} fill={T.accent} />
+        ))}
+        {hp && <line x1={hp.x} x2={hp.x} y1={padT} y2={H - padB} stroke={T.muted} strokeWidth="1" strokeDasharray="2 2" />}
+        {!showDots && hp && <circle cx={hp.x} cy={hp.y} r="4.5" fill={T.accent} />}
+
+        <text x={padL} y={H - 4} fontSize="9" fontWeight="600" fill={T.muted}>{fmtPL(domainStart)}</text>
+        <text x={W - padR} y={H - 4} fontSize="9" fontWeight="600" fill={T.muted} textAnchor="end">dziś</text>
+      </svg>
+      {hp && (
+        <div style={{
+          position: "absolute", left: `${(hp.x / W) * 100}%`, top: 0, transform: "translateX(-50%)",
+          background: T.ink, color: "#fff", fontSize: 11, fontWeight: 700, padding: "4px 8px",
+          borderRadius: 6, pointerEvents: "none", whiteSpace: "nowrap",
+        }}>
+          {fmtPL(fromKey(hp.date))} · {hp.value.toFixed(1)} kg
         </div>
       )}
     </div>
@@ -670,6 +746,16 @@ function WeightTab({ data, setData, stats }) {
             <b className="num" style={{ color: stats.projection < GOAL_WEIGHT ? T.done : T.accent }}>{stats.projection.toFixed(1)} kg</b>
           </div>
         )}
+      </Card>
+
+      <SectionTitle>Wykres — pomiary dzienne</SectionTitle>
+      <Card>
+        <WeightChart points={Object.entries(data.weights).map(([date, value]) => ({ date, value })).sort((a, b) => (a.date < b.date ? -1 : 1))} />
+      </Card>
+
+      <SectionTitle>Wykres — średnie tygodniowe</SectionTitle>
+      <Card>
+        <WeightChart points={stats.weeklyAvgs.map((wk) => ({ date: wk.key, value: wk.avg }))} />
       </Card>
 
       <SectionTitle>Dzisiejszy pomiar</SectionTitle>
@@ -755,7 +841,7 @@ function GoalsTab({ data, setData, stats }) {
 
       <UnlockCard
         title="Nowy rower"
-        sub="nagroda za średnią tygodniową < 100 kg · research wolno, zakup nie"
+        sub={`nagroda za średnią tygodniową < ${GOAL_WEIGHT} kg · research wolno, zakup nie`}
         unlocked={bikeUnlocked}
         footer={stats.latestAvg !== null ? `obecna średnia: ${stats.latestAvg.toFixed(1)} kg` : "brak pomiarów wagi"}
       >
@@ -1082,7 +1168,7 @@ function Chip({ children, active, onClick }) {
 }
 
 /* ————— HISTORIA ————— */
-const SESSION_CATEGORIES = ["figurki", "czytanie", "rozwoj"];
+const SESSION_CATEGORIES = Object.keys(SESSION_GOALS);
 const CHART_WEEKS = 8;
 
 function HistoryTab({ data, setData }) {
@@ -1102,7 +1188,11 @@ function HistoryTab({ data, setData }) {
   const sessions = data.sessions
     .filter((s) => filter === "wszystko" || s.category === filter)
     .slice()
-    .sort((a, b) => (a.date === b.date ? 0 : a.date < b.date ? 1 : -1));
+    .sort((a, b) => {
+      const ak = `${a.date} ${a.time || "00:00"}`;
+      const bk = `${b.date} ${b.time || "00:00"}`;
+      return ak === bk ? 0 : ak < bk ? 1 : -1;
+    });
 
   const del = (id) => setData((d) => ({ ...d, sessions: d.sessions.filter((s) => s.id !== id) }));
 
@@ -1137,7 +1227,7 @@ function HistoryTab({ data, setData }) {
           <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: i < sessions.length - 1 ? `1px solid ${T.line}` : "none" }}>
             <div>
               <div style={{ fontWeight: 700, fontSize: 14 }}>{SESSION_LABELS[s.category]}</div>
-              <div style={{ fontSize: 11, color: T.muted, fontWeight: 600 }}>{fmtPL(fromKey(s.date))}</div>
+              <div style={{ fontSize: 11, color: T.muted, fontWeight: 600 }}>{fmtPL(fromKey(s.date))}{s.time ? `, ${s.time}` : ""}</div>
             </div>
             <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <span className="num" style={{ fontWeight: 800 }}>{s.minutes} min</span>
