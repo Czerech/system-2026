@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import {
   CalendarCheck, Scale, Trophy, PiggyBank, Library as LibraryIcon,
   Plus, Check, Star, Trash2, Search, AlertTriangle, Lock, Unlock,
-  Download, Upload, LogOut, History
+  Download, Upload, LogOut, History, Pencil
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -109,11 +109,11 @@ const DEFAULT_DATA = {
   sessions: [],         // [{id, category: figurki|czytanie|rozwoj, minutes, date}]
   counters: {
     figPaintedSinceBuy: 0, figPaintedTotal: 0,
-    booksFinished: 0, bookCreditsSpent: 0,
+    bookPagesSpent: 0,
     currentModel: "", modelsDone: 0,
   },
   funds: { transferred: 0 },
-  library: [],          // {id,type,title,status,rating,added}
+  library: [],          // {id,type,title,status,rating,added,author,pages}
 };
 
 const STORAGE_KEY = "system-2026-v1";
@@ -821,10 +821,11 @@ function GoalsTab({ data, setData, stats }) {
   const c = data.counters;
   const setC = (patch) => setData((d) => ({ ...d, counters: { ...d.counters, ...patch } }));
 
-  const backlogBooks = data.library.filter((it) => (it.type === "książka" || it.type === "manga") && it.status === "backlog").length;
-  const ratio = backlogBooks > 10 ? 2 : 1;
-  const credits = c.booksFinished - c.bookCreditsSpent;
-  const canBuyBook = credits >= ratio;
+  const pagesRead = data.library
+    .filter((it) => BOOK_TYPES.includes(it.type) && it.status === "ukończone")
+    .reduce((sum, it) => sum + (it.pages || 0), 0);
+  const pageCredits = Math.floor(pagesRead / 2);
+  const pagesAvailable = Math.max(0, pageCredits - (c.bookPagesSpent || 0));
 
   const bikeUnlocked = stats.latestAvg !== null && stats.latestAvg < GOAL_WEIGHT;
 
@@ -864,15 +865,11 @@ function GoalsTab({ data, setData, stats }) {
 
       <UnlockCard
         title="Zakup książki"
-        sub={`zasada ${ratio}:1${ratio === 2 ? " (backlog >10 — zaostrzona)" : ""} · skończona odblokowuje zakup`}
-        unlocked={canBuyBook}
-        footer={`kredyty: ${credits} · skończone: ${c.booksFinished} / 20 · backlog na półce: ${backlogBooks}`}
+        sub="zasada 1:2 — 2 strony przeczytane = 1 strona do kupienia"
+        unlocked={pagesAvailable > 0}
+        footer={`dostępne: ${pagesAvailable} str. · przeczytane: ${pagesRead} str. · wydane: ${c.bookPagesSpent || 0} str.`}
       >
-        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-          <ActionBtn onClick={() => setC({ booksFinished: c.booksFinished + 1 })}>+1 skończona</ActionBtn>
-          <ActionBtn disabled={!canBuyBook} variant="ghost"
-            onClick={() => setC({ bookCreditsSpent: c.bookCreditsSpent + ratio })}>Kupuję (−{ratio})</ActionBtn>
-        </div>
+        <BuyBookRow pagesAvailable={pagesAvailable} onBuy={(n) => setC({ bookPagesSpent: (c.bookPagesSpent || 0) + n })} />
       </UnlockCard>
 
       <UnlockCard
@@ -927,6 +924,18 @@ function ModelInput({ onStart }) {
       <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nazwa nowego modelu"
         style={{ flex: 1, border: `1px solid ${T.line}`, borderRadius: 10, padding: "10px 12px", fontSize: 14, minWidth: 0 }} />
       <ActionBtn disabled={!name.trim()} onClick={() => { onStart(name.trim()); setName(""); }}>Start</ActionBtn>
+    </div>
+  );
+}
+function BuyBookRow({ pagesAvailable, onBuy }) {
+  const [pages, setPages] = useState("");
+  const n = parseInt(pages, 10);
+  const valid = n > 0 && n <= pagesAvailable;
+  return (
+    <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+      <input type="number" inputMode="numeric" placeholder="strony nowej książki" value={pages} onChange={(e) => setPages(e.target.value)}
+        style={{ flex: 1, border: `1px solid ${T.line}`, borderRadius: 10, padding: "10px 12px", fontSize: 14, minWidth: 0 }} />
+      <ActionBtn disabled={!valid} onClick={() => { onBuy(n); setPages(""); }}>Kupuję{n > 0 ? ` (−${n})` : ""}</ActionBtn>
     </div>
   );
 }
@@ -1033,6 +1042,7 @@ function FundsTab({ data, setData, stats }) {
 /* ————— BIBLIOTEKA ————— */
 const TYPES = ["figurka", "książka", "audiobook", "manga", "model", "film", "serial"];
 const STATUSES = ["backlog", "w toku", "ukończone"];
+const BOOK_TYPES = ["książka", "audiobook", "manga"];
 
 function LibraryTab({ data, setData }) {
   const [q, setQ] = useState("");
@@ -1042,13 +1052,22 @@ function LibraryTab({ data, setData }) {
   const [nTitle, setNTitle] = useState("");
   const [nType, setNType] = useState("figurka");
   const [nStatus, setNStatus] = useState("backlog");
+  const [nAuthor, setNAuthor] = useState("");
+  const [nPages, setNPages] = useState("");
   const [confirmDel, setConfirmDel] = useState(null);
+  const [editingId, setEditingId] = useState(null);
 
   const add = () => {
     if (!nTitle.trim()) return;
-    const item = { id: Date.now() + "" + Math.random().toString(36).slice(2, 6), title: nTitle.trim(), type: nType, status: nStatus, rating: 0, added: toKey(new Date()) };
+    const item = {
+      id: Date.now() + "" + Math.random().toString(36).slice(2, 6), title: nTitle.trim(), type: nType, status: nStatus, rating: 0, added: toKey(new Date()),
+      author: BOOK_TYPES.includes(nType) ? nAuthor.trim() : "",
+      pages: BOOK_TYPES.includes(nType) && nPages ? parseInt(nPages, 10) : 0,
+    };
     setData((d) => ({ ...d, library: [item, ...d.library] }));
     setNTitle("");
+    setNAuthor("");
+    setNPages("");
   };
   const updItem = (id, patch) => setData((d) => ({ ...d, library: d.library.map((it) => (it.id === id ? { ...it, ...patch } : it)) }));
   const del = (id) => setData((d) => ({ ...d, library: d.library.filter((it) => it.id !== id) }));
@@ -1090,6 +1109,14 @@ function LibraryTab({ data, setData }) {
                 {STATUSES.map((s) => <option key={s}>{s}</option>)}
               </select>
             </div>
+            {BOOK_TYPES.includes(nType) && (
+              <div style={{ display: "flex", gap: 8 }}>
+                <input value={nAuthor} onChange={(e) => setNAuthor(e.target.value)} placeholder="Autor"
+                  style={{ flex: 1, border: `1px solid ${T.line}`, borderRadius: 10, padding: "10px 12px", fontSize: 14, minWidth: 0 }} />
+                <input type="number" inputMode="numeric" value={nPages} onChange={(e) => setNPages(e.target.value)} placeholder="Strony"
+                  style={{ width: 90, border: `1px solid ${T.line}`, borderRadius: 10, padding: "10px 12px", fontSize: 14 }} />
+              </div>
+            )}
             <div style={{ display: "flex", gap: 8 }}>
               <ActionBtn onClick={add} disabled={!nTitle.trim()}>Dodaj</ActionBtn>
               <ActionBtn variant="ghost" onClick={() => setAdding(false)}>Zamknij</ActionBtn>
@@ -1118,41 +1145,104 @@ function LibraryTab({ data, setData }) {
       <Card>
         {filtered.length === 0 && <Empty>{data.library.length === 0 ? "Biblioteka pusta — dodaj pierwszą pozycję powyżej." : "Brak wyników dla filtrów."}</Empty>}
         {filtered.map((it, i) => (
-          <div key={it.id} style={{ padding: "10px 0", borderBottom: i < filtered.length - 1 ? `1px solid ${T.line}` : "none" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 700, fontSize: 14, overflowWrap: "anywhere" }}>{it.title}</div>
-                <div style={{ fontSize: 11, color: T.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 2 }}>{it.type}</div>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-                <button onClick={() => {
-                  const idx = STATUSES.indexOf(it.status);
-                  updItem(it.id, { status: STATUSES[(idx + 1) % STATUSES.length] });
-                }} style={{ fontSize: 11, fontWeight: 800, padding: "5px 9px", borderRadius: 8, border: "none", background: it.status === "ukończone" ? T.done : it.status === "w toku" ? T.accent : T.paper, color: it.status === "backlog" ? T.muted : "#fff" }}>
-                  {it.status}
-                </button>
-                {confirmDel === it.id ? (
-                  <button onClick={() => del(it.id)} style={{ background: T.danger, color: "#fff", border: "none", borderRadius: 8, padding: "5px 8px", fontSize: 11, fontWeight: 800 }}>na pewno?</button>
-                ) : (
-                  <button onClick={() => setConfirmDel(it.id)} style={{ background: "none", border: "none", color: T.muted, padding: 4 }} aria-label="usuń"><Trash2 size={15} /></button>
-                )}
-              </div>
-            </div>
-            {it.status === "ukończone" && (
-              <div style={{ display: "flex", gap: 2, marginTop: 6 }}>
-                {[1, 2, 3, 4, 5].map((n) => (
-                  <button key={n} onClick={() => updItem(it.id, { rating: it.rating === n ? 0 : n })} style={{ background: "none", border: "none", padding: 2 }} aria-label={`ocena ${n}`}>
-                    <Star size={16} fill={it.rating >= n ? T.accent : "none"} color={it.rating >= n ? T.accent : T.line} />
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          <LibraryItemRow key={it.id} it={it} isLast={i === filtered.length - 1}
+            updItem={updItem} del={del}
+            confirmDel={confirmDel} setConfirmDel={setConfirmDel}
+            editing={editingId === it.id}
+            onEditToggle={() => setEditingId(editingId === it.id ? null : it.id)} />
         ))}
       </Card>
       {data.library.length > 0 && (
         <div style={{ fontSize: 11.5, color: T.muted, textAlign: "center", marginTop: 4 }}>
           {data.library.length} pozycji łącznie
+        </div>
+      )}
+    </div>
+  );
+}
+function LibraryItemRow({ it, isLast, updItem, del, confirmDel, setConfirmDel, editing, onEditToggle }) {
+  const [eTitle, setETitle] = useState(it.title);
+  const [eType, setEType] = useState(it.type);
+  const [eAuthor, setEAuthor] = useState(it.author || "");
+  const [ePages, setEPages] = useState(it.pages ? String(it.pages) : "");
+
+  const startEdit = () => {
+    setETitle(it.title);
+    setEType(it.type);
+    setEAuthor(it.author || "");
+    setEPages(it.pages ? String(it.pages) : "");
+    onEditToggle();
+  };
+  const saveEdit = () => {
+    if (!eTitle.trim()) return;
+    updItem(it.id, {
+      title: eTitle.trim(), type: eType,
+      author: BOOK_TYPES.includes(eType) ? eAuthor.trim() : "",
+      pages: BOOK_TYPES.includes(eType) && ePages ? parseInt(ePages, 10) : 0,
+    });
+    onEditToggle();
+  };
+
+  if (editing) {
+    return (
+      <div style={{ padding: "10px 0", borderBottom: isLast ? "none" : `1px solid ${T.line}` }}>
+        <div style={{ display: "grid", gap: 8 }}>
+          <input value={eTitle} onChange={(e) => setETitle(e.target.value)} placeholder="Tytuł / nazwa" autoFocus
+            style={{ border: `1px solid ${T.line}`, borderRadius: 10, padding: "10px 12px", fontSize: 15 }} />
+          <select value={eType} onChange={(e) => setEType(e.target.value)} style={selStyle}>
+            {TYPES.map((t) => <option key={t}>{t}</option>)}
+          </select>
+          {BOOK_TYPES.includes(eType) && (
+            <div style={{ display: "flex", gap: 8 }}>
+              <input value={eAuthor} onChange={(e) => setEAuthor(e.target.value)} placeholder="Autor"
+                style={{ flex: 1, border: `1px solid ${T.line}`, borderRadius: 10, padding: "10px 12px", fontSize: 14, minWidth: 0 }} />
+              <input type="number" inputMode="numeric" value={ePages} onChange={(e) => setEPages(e.target.value)} placeholder="Strony"
+                style={{ width: 90, border: `1px solid ${T.line}`, borderRadius: 10, padding: "10px 12px", fontSize: 14 }} />
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 8 }}>
+            <ActionBtn onClick={saveEdit} disabled={!eTitle.trim()}>Zapisz</ActionBtn>
+            <ActionBtn variant="ghost" onClick={onEditToggle}>Anuluj</ActionBtn>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: "10px 0", borderBottom: isLast ? "none" : `1px solid ${T.line}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, overflowWrap: "anywhere" }}>{it.title}</div>
+          <div style={{ fontSize: 11, color: T.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 2 }}>{it.type}</div>
+          {BOOK_TYPES.includes(it.type) && (it.author || it.pages > 0) && (
+            <div style={{ fontSize: 11.5, color: T.muted, fontWeight: 600, marginTop: 2 }}>
+              {it.author}{it.author && it.pages > 0 ? " · " : ""}{it.pages > 0 ? `${it.pages} str.` : ""}
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+          <button onClick={() => {
+            const idx = STATUSES.indexOf(it.status);
+            updItem(it.id, { status: STATUSES[(idx + 1) % STATUSES.length] });
+          }} style={{ fontSize: 11, fontWeight: 800, padding: "5px 9px", borderRadius: 8, border: "none", background: it.status === "ukończone" ? T.done : it.status === "w toku" ? T.accent : T.paper, color: it.status === "backlog" ? T.muted : "#fff" }}>
+            {it.status}
+          </button>
+          <button onClick={startEdit} style={{ background: "none", border: "none", color: T.muted, padding: 4 }} aria-label="edytuj"><Pencil size={15} /></button>
+          {confirmDel === it.id ? (
+            <button onClick={() => del(it.id)} style={{ background: T.danger, color: "#fff", border: "none", borderRadius: 8, padding: "5px 8px", fontSize: 11, fontWeight: 800 }}>na pewno?</button>
+          ) : (
+            <button onClick={() => setConfirmDel(it.id)} style={{ background: "none", border: "none", color: T.muted, padding: 4 }} aria-label="usuń"><Trash2 size={15} /></button>
+          )}
+        </div>
+      </div>
+      {it.status === "ukończone" && (
+        <div style={{ display: "flex", gap: 2, marginTop: 6 }}>
+          {[1, 2, 3, 4, 5].map((n) => (
+            <button key={n} onClick={() => updItem(it.id, { rating: it.rating === n ? 0 : n })} style={{ background: "none", border: "none", padding: 2 }} aria-label={`ocena ${n}`}>
+              <Star size={16} fill={it.rating >= n ? T.accent : "none"} color={it.rating >= n ? T.accent : T.line} />
+            </button>
+          ))}
         </div>
       )}
     </div>
